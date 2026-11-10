@@ -1,6 +1,6 @@
 # Outcome Controller Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Complete an auditable, crash-safe controller that finishes public_01 and public_02 and reports load performance.
 
@@ -34,10 +34,10 @@
 
 **Interfaces:** `Api` wraps HTTP; `Store.ingest_chunk(chunk_id, lines)` commits aggregates and cursor; `Store.calls(...)` reads counters.
 
-- [ ] Write tests for idempotent ingest, crash cursor, and aggregate denominators.
-- [ ] Run tests and observe expected failures.
-- [ ] Implement streaming API and transactional SQLite store.
-- [ ] Run full tests and commit `feat: add durable event ingestion`.
+- [x] Write tests for idempotent ingest, crash cursor, and aggregate denominators.
+- [x] Run tests and observe expected failures.
+- [x] Implement streaming API and transactional SQLite store.
+- [x] Run full tests and commit `feat: add durable event ingestion`.
 
 ### Task 2: Statistical strategy
 
@@ -45,10 +45,10 @@
 
 **Interfaces:** `choose_change(workflow, config, observations, state)` returns a candidate or `None` with rationale and metrics.
 
-- [ ] Write tests for sample limits, primary lift, guardrail rejection, caller-ID degradation, and incident thresholds.
-- [ ] Run tests and observe expected failures.
-- [ ] Implement deterministic candidate selection, preserving other config fields.
-- [ ] Run full tests and commit `feat: add guarded decision rules`.
+- [x] Write tests for sample limits, primary lift, guardrail rejection, caller-ID degradation, and incident thresholds.
+- [x] Run tests and observe expected failures.
+- [x] Implement deterministic candidate selection, preserving other config fields.
+- [x] Run full tests and commit `feat: add guarded decision rules`.
 
 ### Task 3: Governance and loop
 
@@ -56,16 +56,16 @@
 
 **Interfaces:** `Governance.process(wid, candidate, ...)` persists intents and reconciles approvals; `Controller.run()` drives simulated time to finished.
 
-- [ ] Write tests for approval lifecycle, duplicate intent recovery, stale base, and completed run.
-- [ ] Run tests and observe expected failures.
-- [ ] Implement governance and loop.
-- [ ] Run full tests and commit `feat: complete governed controller loop`.
+- [x] Write tests for approval lifecycle, duplicate intent recovery, stale base, and completed run.
+- [x] Run tests and observe expected failures.
+- [x] Implement governance and loop.
+- [x] Run full tests and commit `feat: complete governed controller loop`.
 
 ### Task 4: Evidence and submission
 
 **Files:** `SUBMISSION.md`, `reports/`, `scripts/crash_recovery.sh`, `docs/DECISIONS.md`.
 
-- [ ] Run baselines, public scenarios, and load run; inspect grades and tune only general rules.
-- [ ] Kill and restart a run; record audit query and performance numbers.
-- [ ] Fill submission template including six stakeholder replies and scope cuts.
-- [ ] Verify tests, reports, and documents; commit `docs: record results and tradeoffs`.
+- [x] Run baselines, public scenarios, and load run; inspect grades and tune only general rules.
+- [x] Kill and restart a run; record audit query and performance numbers.
+- [x] Fill submission template including six stakeholder replies and scope cuts.
+- [x] Verify tests, reports, and documents; commit `docs: record results and tradeoffs`.
