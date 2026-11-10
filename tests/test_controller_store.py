@@ -11,7 +11,7 @@ def test_chunk_ingest_is_atomic_and_idempotent(tmp_path):
          "connected": True, "engaged": False, "qa": {"hallucination_flag": True}},
         {"type": "call", "event_id": 2, "ts": "2027-01-04T10:15:00+05:30", "workflow_id": "w",
          "config_version": 1, "cohort_id": "default", "variant": {"voice": "V1", "welcome_message": "W1", "caller_id": "D1", "prompt_version": "P1"},
-         "connected": False, "engaged": False},
+         "connected": False, "engaged": False, "qa": None},
     ]
     lines = [json.dumps(x) for x in events]
     with Store(db) as store:

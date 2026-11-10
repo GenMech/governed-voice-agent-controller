@@ -65,7 +65,7 @@ class Store:
                     row[0] += 1
                     row[1] += bool(ev["connected"])
                     row[2] += bool(ev["engaged"])
-                    row[3] += bool(ev.get("qa", {}).get("hallucination_flag"))
+                    row[3] += bool((ev.get("qa") or {}).get("hallucination_flag"))
             elif kind == "campaign_created":
                 campaigns.append((ev["campaign_id"], ev["workflow_id"], ev["leads"], ev["ts"]))
             elif kind in ("config_changed", "approval_decided"):
@@ -113,3 +113,35 @@ class Store:
         with self.db:
             self.db.execute("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         return value
+
+    def save_intent(self, proposal_id: str, workflow: str, kind: str, body: dict, ts: str):
+        with self.db:
+            self.db.execute("INSERT INTO intents VALUES (?,?,?,?,?,?,?)",
+                            (proposal_id, workflow, kind, json.dumps(body, sort_keys=True), "prepared", None, ts))
+            self.db.execute("INSERT INTO journal(ts,workflow,kind,detail) VALUES (?,?,?,?)",
+                            (ts, workflow, "proposal_prepared", json.dumps(body, sort_keys=True)))
+
+    def active_intent(self, workflow: str) -> dict | None:
+        row = self.db.execute("""SELECT proposal_id,workflow,kind,body,status,approval_id,created_ts
+            FROM intents WHERE workflow=? AND status IN ('prepared','pending','approved')
+            ORDER BY created_ts DESC LIMIT 1""", (workflow,)).fetchone()
+        if not row:
+            return None
+        return dict(zip(("proposal_id", "workflow", "kind", "body", "status", "approval_id", "created_ts"),
+                        (*row[:3], json.loads(row[3]), *row[4:])))
+
+    def latest_intent_ts(self, workflow: str) -> str | None:
+        row = self.db.execute("SELECT MAX(created_ts) FROM intents WHERE workflow=?", (workflow,)).fetchone()
+        return row[0]
+
+    def update_intent(self, proposal_id: str, status: str, ts: str, approval_id: str | None = None, detail: dict | None = None):
+        with self.db:
+            self.db.execute("UPDATE intents SET status=?, approval_id=COALESCE(?,approval_id) WHERE proposal_id=?",
+                            (status, approval_id, proposal_id))
+            self.db.execute("INSERT INTO journal(ts,workflow,kind,detail) SELECT ?,workflow,?,? FROM intents WHERE proposal_id=?",
+                            (ts, "proposal_" + status, json.dumps(detail or {}, sort_keys=True), proposal_id))
+
+    def reset(self):
+        with self.db:
+            for table in ("chunks", "counts", "campaigns", "journal", "intents", "meta"):
+                self.db.execute(f"DELETE FROM {table}")
