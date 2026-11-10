@@ -1,5 +1,7 @@
 """Evidence-bound, workflow-local change candidates."""
 
+from __future__ import annotations
+
 import copy
 from dataclasses import dataclass
 
@@ -35,12 +37,15 @@ def choose_change(workflow: dict, current: dict, observations, now: str) -> Cand
 
     # A caller ID is an operational risk for every workflow, whatever its primary KPI.
     cid_weights = cfg["allocations"]["default"]["caller_id"]
-    recent = observations.variants(wid, "caller_id", since=_hours_ago(now, 24))
+    recent = observations.variants(wid, "caller_id", since=_hours_ago(now, 24), cohort="default")
     active = [(cid, recent[cid]) for cid, weight in cid_weights.items() if weight > 0 and cid in recent]
     if len(active) >= 2:
         best = max(active, key=lambda item: item[1][1] / max(1, item[1][0]))
         worst = min(active, key=lambda item: item[1][1] / max(1, item[1][0]))
         if best[0] != worst[0] and beats((worst[1][0], worst[1][1]), (best[1][0], best[1][1]), minimum=200):
+            engagement_limit = guardrail.get("engagement_rate_max_drop", 0.02)
+            if not guardrail_safe((worst[1][1], worst[1][2]), (best[1][1], best[1][2]), engagement_limit):
+                return None
             delta = min(0.2, cid_weights[worst[0]])
             weights = dict(cid_weights)
             weights[worst[0]] = round(weights[worst[0]] - delta, 4)
@@ -49,7 +54,7 @@ def choose_change(workflow: dict, current: dict, observations, now: str) -> Cand
                 gap = best[1][1] / best[1][0] - worst[1][1] / worst[1][0]
                 return _candidate(workflow, current, "caller_id", weights,
                     f"Reduce use of degraded caller ID {worst[0]}",
-                    f"Last 24h pickup: {worst[0]} {worst[1][1]}/{worst[1][0]}, {best[0]} {best[1][1]}/{best[1][0]}; pooled z >= 2.58.",
+                    f"Last 24h pickup: {worst[0]} {worst[1][1]}/{worst[1][0]}, {best[0]} {best[1][1]}/{best[1][0]}; pooled z >= 3.29.",
                     {"window_hours": 24, "control": worst[1][:2], "alternative": best[1][:2], "estimated_pickup_gain": round(gap * delta, 4)},
                     gap * delta)
 
@@ -58,7 +63,7 @@ def choose_change(workflow: dict, current: dict, observations, now: str) -> Cand
     for dimension in ("voice", "welcome_message"):
         weights = cfg["allocations"]["default"][dimension]
         options = workflow["options"][dimension]
-        all_rows = observations.variants(wid, dimension)
+        all_rows = observations.variants(wid, dimension, cohort="default")
         live = [name for name, weight in weights.items() if weight > 0]
         if len(live) == 1:
             base = live[0]
@@ -67,28 +72,32 @@ def choose_change(workflow: dict, current: dict, observations, now: str) -> Cand
             untried = [name for name in options if name not in all_rows]
             if untried:
                 challenger = untried[0]
-                return _candidate(workflow, current, dimension, {base: 0.8, challenger: 0.2},
-                    f"Test {dimension} {challenger} on 20% of calls",
-                    f"Explore {challenger} against {base}; winner requires >=150 connected per arm and z >=2.58.",
-                    {"baseline_connected": all_rows[base][1], "planned_test_share": 0.2, "historical_replay": "not causal"}, 0.1)
+                return _candidate(workflow, current, dimension, {base: 0.95, challenger: 0.05},
+                    f"Test {dimension} {challenger} on 5% of calls",
+                    f"Explore {challenger} against {base}; winner requires >=150 connected per arm and z >=3.29.",
+                    {"baseline_connected": all_rows[base][1], "planned_test_share": 0.05, "historical_replay": "not causal"}, 0.05)
             continue
         if len(live) != 2:
             continue
-        rows = observations.variants(wid, dimension, version=version)
+        rows = observations.variants(wid, dimension, version=version, cohort="default")
         a, b = live
         if a not in rows or b not in rows:
             return None
         ra, rb = rows[a], rows[b]
         if min(ra[1], rb[1]) < 150:
             return None
-        winner, loser = (b, a) if beats(kpi_pair(ra, primary), kpi_pair(rb, primary)) else ((a, b) if beats(kpi_pair(rb, primary), kpi_pair(ra, primary)) else (None, None))
-        if winner is None:
+        control = max(live, key=lambda name: weights[name])
+        challenger = next(name for name in live if name != control)
+        rc, rh = rows[control], rows[challenger]
+        if not guardrail_safe((rc[0], rc[1]), (rh[0], rh[1]), guardrail["pickup_rate_max_drop"]) or beats(kpi_pair(rh, primary), kpi_pair(rc, primary)):
+            return _candidate(workflow, current, dimension, {control: 1},
+                f"Remove underperforming {dimension} {challenger}",
+                f"Same-version comparison: {control} {rc[:3]}, {challenger} {rh[:3]}; primary or pickup guardrail failed.",
+                {"version": version, "control": rc[:3], "challenger": rh[:3]}, 0.2)
+        if not beats(kpi_pair(rc, primary), kpi_pair(rh, primary)):
             return None
-        rw, rl = rows[winner], rows[loser]
-        # Pickup is the engagement workflow's guardrail.
-        safe = guardrail_safe((rl[0], rl[1]), (rw[0], rw[1]), guardrail["pickup_rate_max_drop"])
-        if not safe:
-            return None
+        winner, loser = challenger, control
+        rw, rl = rh, rc
         new_weights = {winner: 0.8, loser: 0.2}
         if weights == new_weights:
             continue

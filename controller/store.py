@@ -1,5 +1,7 @@
 """Transactional, bounded event aggregation and controller journal."""
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from collections import defaultdict
@@ -92,12 +94,15 @@ class Store:
             args.append(cohort)
         return tuple(self.db.execute(sql, args).fetchone())
 
-    def variants(self, workflow: str, dimension: str, *, since: str = "", version: int | None = None) -> dict[str, tuple[int, int, int, int]]:
+    def variants(self, workflow: str, dimension: str, *, since: str = "", version: int | None = None, cohort: str | None = None) -> dict[str, tuple[int, int, int, int]]:
         sql = "SELECT variant,SUM(dials),SUM(connected),SUM(engaged),SUM(hallucinations) FROM counts WHERE workflow=? AND dimension=? AND hour_key>=?"
         args = [workflow, dimension, since]
         if version is not None:
             sql += " AND version=?"
             args.append(version)
+        if cohort is not None:
+            sql += " AND cohort=?"
+            args.append(cohort)
         sql += " GROUP BY variant"
         return {r[0]: tuple(r[1:]) for r in self.db.execute(sql, args)}
 
@@ -133,6 +138,10 @@ class Store:
     def latest_intent_ts(self, workflow: str) -> str | None:
         row = self.db.execute("SELECT MAX(created_ts) FROM intents WHERE workflow=?", (workflow,)).fetchone()
         return row[0]
+
+    def approval_count_since(self, workflow: str, since: str) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM intents WHERE workflow=? AND kind='approval' AND created_ts>=?",
+                               (workflow, since)).fetchone()[0]
 
     def update_intent(self, proposal_id: str, status: str, ts: str, approval_id: str | None = None, detail: dict | None = None):
         with self.db:

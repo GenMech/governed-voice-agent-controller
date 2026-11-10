@@ -5,6 +5,8 @@ import json
 import time
 from datetime import datetime, timedelta
 
+import httpx
+
 from .governance import Governance
 from .stats import hallucination_incident
 from .strategy import Candidate, choose_change
@@ -42,12 +44,16 @@ class Controller:
                 self.governance.reconcile(wid, now)
                 if self.store.active_intent(wid):
                     continue
-                if not self.governance.can_propose(workflow, now):
-                    continue
                 current = self.api.request("GET", f"/workflows/{wid}/config")
-                candidate = self._incident_candidate(workflow, current, state)
-                if candidate is None:
+                incident = self._incident_signal(workflow, current, now)
+                if incident:
+                    if not self.governance.can_propose(workflow, now, urgent=True):
+                        continue
+                    candidate = self._incident_candidate(workflow, current, state, incident)
+                else:
                     candidate = choose_change(workflow, current, self.store, now)
+                    if candidate and not self.governance.can_propose(workflow, now, candidate=candidate, current=current):
+                        continue
                 if candidate:
                     self.governance.propose(workflow, current, candidate, now)
             step = 15 if any(self.store.active_intent(wid) for wid in self.workflows) else 60
@@ -62,28 +68,49 @@ class Controller:
                     "wall_seconds": round(time.monotonic() - self.started, 2),
                     "credits": state.get("credits_remaining")}), flush=True)
 
-    def _incident_candidate(self, workflow, current, state):
+    def _incident_signal(self, workflow, current, now):
         wid = workflow["workflow_id"]
-        now = state["ts"]
         prompt = current["config"]["prompt_version"]
         since = (datetime.fromisoformat(now) - timedelta(hours=6)).isoformat()[:13]
         observed = self.store.counts(wid, "prompt_version", prompt, since=since)
-        if not hallucination_incident(observed) or state.get("credits_remaining", 0) < 12:
+        historical = self.store.counts(wid, "prompt_version", prompt)
+        reference = tuple(a - b for a, b in zip(historical, observed))
+        if reference[1] < 300:
+            alternatives = self.store.variants(wid, "prompt_version")
+            reference = max((row for key, row in alternatives.items() if key != prompt),
+                            key=lambda row: row[1], default=reference)
+        return observed if hallucination_incident(observed, reference) else None
+
+    def _incident_candidate(self, workflow, current, state, observed):
+        wid = workflow["workflow_id"]
+        now = state["ts"]
+        prompt = current["config"]["prompt_version"]
+        if self.api.request("GET", "/sim/state").get("credits_remaining", 0) < 8:
             return None
         attempted = self.store.meta(f"incident_attempt:{wid}")
         if attempted and datetime.fromisoformat(now) - datetime.fromisoformat(attempted) < timedelta(hours=12):
             return None
         self.store.meta(f"incident_attempt:{wid}", now)
         self.store.journal(now, wid, "incident_detected", {"prompt": prompt, "observed": observed, "window_hours": 6})
-        suggestions = self.api.request("POST", "/llm/suggest-fixes", json={"workflow_id": wid,
-            "problem": f"Hallucination flags {observed[3]}/{observed[1]} connected calls in the last 6 hours on {prompt}"})["suggestions"]
+        try:
+            suggestions = self.api.request_once("POST", "/llm/suggest-fixes", json={"workflow_id": wid,
+                "problem": f"Hallucination flags {observed[3]}/{observed[1]} connected calls in the last 6 hours on {prompt}"})["suggestions"]
+        except httpx.HTTPError as exc:
+            self.store.journal(now, wid, "incident_request_failed", {"stage": "suggest", "error": str(exc)})
+            return None
         # Safety is necessary but not sufficient: avoid known near-verbatim scripts that can damage engagement.
         suggestions = [s for s in suggestions if s["prompt_version"] != prompt]
         suggestions.sort(key=lambda s: ("grounded" not in s["summary"].lower(),
                                          "strict" in s["summary"].lower()))
         for suggestion in suggestions[:2]:
-            validation = self.api.request("POST", "/validation/runs", json={"workflow_id": wid,
-                "prompt_version": suggestion["prompt_version"], "n": 500})
+            if self.api.request("GET", "/sim/state").get("credits_remaining", 0) < 5:
+                break
+            try:
+                validation = self.api.request_once("POST", "/validation/runs", json={"workflow_id": wid,
+                    "prompt_version": suggestion["prompt_version"], "n": 500})
+            except httpx.HTTPError as exc:
+                self.store.journal(now, wid, "incident_request_failed", {"stage": "validate", "error": str(exc)})
+                break
             self.store.journal(now, wid, "validation", validation)
             if validation["pass_rate"] < workflow["governance"]["min_validation_pass_rate"]:
                 continue

@@ -33,3 +33,13 @@ def test_failed_chunk_does_not_advance_cursor(tmp_path):
         else:
             raise AssertionError("malformed chunk accepted")
         assert store.last_chunk() == -1
+
+
+def test_variant_query_can_exclude_explicit_cohorts(tmp_path):
+    base = {"type": "call", "ts": "2027-01-04T10:00:00+05:30", "workflow_id": "w", "config_version": 1,
+            "connected": True, "engaged": True, "qa": None}
+    default = {**base, "cohort_id": "default", "variant": {"voice": "V1"}}
+    senior = {**base, "cohort_id": "senior", "variant": {"voice": "V2"}}
+    with Store(tmp_path / "state.sqlite") as store:
+        store.ingest_chunk(0, [json.dumps(default), json.dumps(senior)])
+        assert store.variants("w", "voice", cohort="default") == {"V1": (1, 1, 1, 0)}

@@ -1,6 +1,9 @@
 """Crash-recoverable proposal and approval state machine."""
 
+from __future__ import annotations
+
 import uuid
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -9,14 +12,15 @@ class Governance:
     def __init__(self, api, store):
         self.api, self.store = api, store
 
-    def can_propose(self, workflow: dict, now: str, *, urgent: bool = False) -> bool:
+    def can_propose(self, workflow: dict, now: str, *, urgent: bool = False, candidate=None, current: dict | None = None) -> bool:
         if self.store.active_intent(workflow["workflow_id"]):
             return False
-        from datetime import datetime, timedelta
         previous = self.store.latest_intent_ts(workflow["workflow_id"])
         if previous and not urgent and datetime.fromisoformat(now) - datetime.fromisoformat(previous) < timedelta(hours=6):
             return False
-        if self._auto_allowed(workflow, None):
+        if candidate is not None and current is not None:
+            candidate.dry_run.setdefault("previous_weights", current["config"].get("allocations", {}).get("default", {}).get(candidate.dimension))
+        if self._auto_allowed(workflow, candidate):
             return True
         hour = datetime.fromisoformat(now).hour
         start, end = workflow["governance"]["approver_hours"]
@@ -44,6 +48,9 @@ class Governance:
         before = current["config"].get("allocations", {}).get("default", {}).get(candidate.dimension)
         candidate.dry_run["previous_weights"] = before
         auto = self._auto_allowed(workflow, candidate)
+        since = (datetime.fromisoformat(now) - timedelta(hours=24)).isoformat()
+        if not auto and self.store.approval_count_since(wid, since) >= workflow["governance"]["max_requests_per_24h"]:
+            return
         proposal_id = str(uuid.uuid4())
         body = {"proposal_id": proposal_id, "workflow_id": wid,
                 "base_version": current["version"], "proposed_config": candidate.config,
@@ -75,7 +82,10 @@ class Governance:
                     submitted = self.api.request("POST", "/approvals", json=body)
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 409:
-                        return  # retry discovery next tick
+                        current = self.api.request("GET", f"/workflows/{wid}/config")
+                        if current["version"] != body["base_version"]:
+                            self.store.update_intent(pid, "stale", now, detail={"current_version": current["version"]})
+                        return  # otherwise retry duplicate discovery next tick
                     self.store.update_intent(pid, "rejected", now, detail={"http_status": exc.response.status_code, "body": exc.response.text})
                     return
                 approval_id = submitted["approval_id"]

@@ -47,3 +47,35 @@ def test_loop_refreshes_full_state_after_advance(tmp_path):
     with Store(tmp_path / "state.sqlite") as store:
         Controller(api, store).run()
         assert api.advance_calls == 2
+
+
+def test_incident_stops_validation_when_credits_are_low(tmp_path):
+    class PaidApi:
+        def __init__(self):
+            self.credits = 12
+            self.validations = 0
+
+        def request(self, method, path, **kwargs):
+            if path == "/sim/state":
+                return {"credits_remaining": self.credits}
+            if path == "/llm/suggest-fixes":
+                self.credits -= 3
+                return {"suggestions": [{"prompt_version": "P3", "summary": "Grounded"},
+                                        {"prompt_version": "P4", "summary": "Other"}]}
+            if path == "/validation/runs":
+                self.validations += 1
+                assert self.credits >= 5
+                self.credits -= 5
+                return {"validation_run_id": f"v{self.validations}", "pass_rate": 0.9,
+                        "credits_remaining": self.credits}
+            raise AssertionError(path)
+
+        request_once = request
+
+    api = PaidApi()
+    wf = {"workflow_id": "w", "governance": {"min_validation_pass_rate": 0.97}, "daily_batch": {"size": 100}}
+    current = {"config": {"prompt_version": "P1"}}
+    state = {"ts": "2027-01-04T12:00:00+05:30", "credits_remaining": 12}
+    with Store(tmp_path / "state.sqlite") as store:
+        assert Controller(api, store)._incident_candidate(wf, current, state, (500, 200, 100, 20)) is None
+    assert api.validations == 1

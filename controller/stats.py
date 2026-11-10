@@ -1,9 +1,11 @@
 """Deterministic tests over distinct KPI denominators."""
 
+from __future__ import annotations
+
 import math
 
 
-def beats(control: tuple[int, int], challenger: tuple[int, int], *, minimum: int = 150, z_limit: float = 2.58) -> bool:
+def beats(control: tuple[int, int], challenger: tuple[int, int], *, minimum: int = 150, z_limit: float = 3.29) -> bool:
     """Two-sided pooled z test, requiring a positive challenger difference."""
     n0, x0 = control
     n1, x1 = challenger
@@ -28,6 +30,12 @@ def kpi_pair(row: tuple[int, int, int, int], kpi: str) -> tuple[int, int]:
     return (dials, connected) if kpi == "pickup_rate" else (connected, engaged)
 
 
-def hallucination_incident(row: tuple[int, int, int, int]) -> bool:
+def hallucination_incident(row: tuple[int, int, int, int], reference: tuple[int, int, int, int] | None = None) -> bool:
     _, connected, _, flags = row
-    return connected >= 150 and flags >= 15 and flags / connected >= 0.06
+    if connected < 200 or flags < 10:
+        return False
+    if reference and reference[1] >= 300:
+        old_rate = reference[3] / reference[1]
+        return flags / connected >= old_rate + 0.02 and beats(
+            (reference[1], reference[3]), (connected, flags), minimum=150)
+    return flags / connected >= 0.06
